@@ -116,6 +116,7 @@ def snapshot():
 def main():
     errors=[]; scanned=0; qualified=[]; provider_counts={}
     spot=None; source=None; fatal=False
+    limit=min(80,max(1,int(os.getenv('MAX_HISTORY_SYMBOLS','30'))))
     try:
         spot,source,warnings=snapshot()
         errors.extend(warnings)
@@ -127,7 +128,6 @@ def main():
         # Full-market snapshot covers all eligible main-board symbols.
         # Historical fetches are capped for public endpoint rate limits;
         # do NOT claim full-market technical coverage.
-        limit=min(80,max(1,int(os.getenv('MAX_HISTORY_SYMBOLS','30'))))
         spot=spot.sort_values('成交额',ascending=False, key=lambda x:pd.to_numeric(x,errors='coerce').fillna(0))
         for _,r in spot.head(limit).iterrows():
             code=str(r['代码'])
