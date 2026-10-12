@@ -24,10 +24,10 @@ jobs:
           python-version: '3.11'
 
       - name: 安装依赖
-        run: pip install -r "要求.txt"
+        run: pip install -r requirements.txt
 
       - name: 执行选股
-        run: python "筛选器.py"
+        run: python screener.py
 
       - name: 保存选股报告
         if: always()
