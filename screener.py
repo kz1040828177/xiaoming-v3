@@ -57,72 +57,22 @@ def assess(df):
       invalidation=f'放量跌破 {support:.2f} 且无法收回', bar_date=str(df['date'].iloc[-1]))
 
 def snapshot():
-    issues=[]
-    for name,fn in [('eastmoney',ak.stock_zh_a_spot_em),('sina',ak.stock_zh_a_spot)]:
+    issues = []
+    for name, fn in [('eastmoney', ak.stock_zh_a_spot_em), ('sina', ak.stock_zh_a_spot)]:
         try:
-            d=fetch(fn,attempts=2).copy()
-            if name=='sina':
-                d=d.rename(columns={'code':'代码','name':'名称','trade':'最新价','amount':'成交额'})
-                d['代码']=d['代码'].astype(str).str.extract(r'(\\d{6})
-    errors=[]; scanned=0; qualified=[]
-    spot=None; source=None; fatal=False
-    try:
-        spot,source,warnings=snapshot()
-        errors.extend(warnings)
-    except Exception as exc:
-        errors.append('全市场行情失败: '+repr(exc)); fatal=True
-    # An unavailable spot feed is a hard stop; do not substitute an old watchlist.
-    if spot is not None:
-        # Full-market snapshot covers all eligible main-board symbols.
-        # Historical fetches are capped for public endpoint rate limits;
-        # do NOT claim full-market technical coverage.
-        limit=int(os.getenv('MAX_HISTORY_SYMBOLS','80'))
-        spot=spot.sort_values('成交额',ascending=False, key=lambda x:pd.to_numeric(x,errors='coerce').fillna(0))
-        for _,r in spot.head(limit).iterrows():
-            code=str(r['代码'])
-            try:
-                result=assess(daily(code)); scanned+=1
-                if result and result['passed']:
-                    qualified.append({'code':code,'name':str(r['名称']),**result})
-            except Exception as exc:
-                errors.append(f'{code}: {str(exc)[:100]}')
-            time.sleep(float(os.getenv('FETCH_DELAY','0.35')))
-    if spot is not None and scanned == 0:
-        fatal=True; errors.append('历史K线读取数量为0')
-    qualified.sort(key=lambda x:x['score'],reverse=True)
-    # Technical candidates are NOT verified trade entries; sector/news and intraday confirmation pending.
-    report={'generated_at':NOW.isoformat(),'status':'DATA_FAILED' if fatal else ('partial' if errors else 'ok'),
-        'universe_count':0 if spot is None else len(spot),'snapshot_source':source,
-        'historical_symbols_checked':scanned,'historical_limit':int(os.getenv('MAX_HISTORY_SYMBOLS','80')),
-        'coverage':'全市场快照 + 成交额前N只历史K线技术复核；不是全市场逐股K线覆盖',
-        'data_warning':'免费行情可能延迟/限流；K线末根可能是当日未收盘数据，盘中不得视为已确认日K',
-        'candidates':qualified[:6],'errors':errors[:30],
-        'decision':'观察名单，不构成买入指令；需核验板块、催化、分钟量价、止损和实时盘口'}
-    (OUT/'latest.json').write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf-8')
-    lines=['# 小明选股 V3.1｜技术预筛报告',f'生成时间：{report["generated_at"]}',
-        f'状态：{report["status"]}；快照范围：{report["universe_count"]}；K线检查：{scanned}',
-        '',f'**覆盖说明：** {report["coverage"]}',f'**风险提示：** {report["data_warning"]}',
-        '','## 技术候选（不是买入信号）']
-    if not qualified: lines.append('0只：未发现通过条件的候选，或数据不完整。')
-    for x in qualified[:6]:
-        lines.append(f'- **{x["name"]} {x["code"]}**｜K线日期 {x["bar_date"]}｜参考价 {x["close"]}｜评分 {x["score"]}｜前高 {x["prior_high"]}｜支撑 {x["support"]}｜预估盈亏比 {x["estimated_rr"]}｜{x["trigger"]}｜失效：{x["invalidation"]}')
-    lines+=['','## 运行问题']+[f'- {e}' for e in errors[:15]] if errors else ['','运行错误：无（不代表行情无延迟）。']
-    (OUT/'latest.md').write_text('\n'.join(lines)+'\n',encoding='utf-8')
-    print('\n'.join(lines))
-    if fatal:
-        print('DATA_FAILED: market data unavailable',file=sys.stderr)
-        sys.exit(2)
-
-if __name__=='__main__': main()
-,expand=False)
-            required={'代码','名称','最新价','成交额'}
+            d = fetch(fn, attempts=2).copy()
+            if name == 'sina':
+                d = d.rename(columns={'code':'代码','name':'名称','trade':'最新价','amount':'成交额'})
+                d['代码'] = d['代码'].astype(str).str.extract(r'([0-9]{6})$', expand=False)
+            required = {'代码','名称','最新价','成交额'}
             if not required.issubset(d.columns):
                 raise ValueError('Missing columns: '+str(required-set(d.columns)))
-            d['最新价']=pd.to_numeric(d['最新价'],errors='coerce')
-            d['成交额']=pd.to_numeric(d['成交额'],errors='coerce')
-            d=d[d['代码'].astype(str).str.fullmatch(r'(60|00)\\d{4}') & d['最新价'].between(0.01,100)].copy()
-            if len(d)<300: raise ValueError('Too few eligible symbols: '+str(len(d)))
-            return d,name,issues
+            d['最新价'] = pd.to_numeric(d['最新价'], errors='coerce')
+            d['成交额'] = pd.to_numeric(d['成交额'], errors='coerce')
+            d = d[d['代码'].astype(str).str.fullmatch(r'(60|00)[0-9]{4}') & d['最新价'].between(0.01,100)].copy()
+            if len(d) < 300:
+                raise ValueError('Too few eligible symbols: '+str(len(d)))
+            return d, name, issues
         except Exception as e:
             issues.append(name+': '+repr(e)[:180])
     raise RuntimeError('All snapshot feeds failed: '+' | '.join(issues))
