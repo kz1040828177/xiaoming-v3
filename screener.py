@@ -1,5 +1,5 @@
 """Xiaoming V3: free A-share screening; research signals, not orders."""
-import json, os, time, sys
+import json, os, time, sys, sys
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from pathlib import Path
@@ -79,14 +79,13 @@ def snapshot():
 
 def main():
     errors=[]; scanned=0; qualified=[]
-    spot=None
+    spot=None; source=None; fatal=False
     try:
-        spot=fetch(ak.stock_zh_a_spot_em)
-        spot['最新价']=pd.to_numeric(spot['最新价'],errors='coerce')
-        spot=spot[spot['代码'].astype(str).str.match(r'^(60|00)\d{4}$') &
-                  spot['最新价'].between(0.01,100)].copy()
+        spot,source,warnings=snapshot()
+        errors.extend(warnings)
     except Exception as exc:
         errors.append('全市场行情失败: '+repr(exc))
+        fatal=True
     # An unavailable spot feed is a hard stop; do not substitute an old watchlist.
     if spot is not None:
         # Full-market snapshot covers all eligible main-board symbols.
@@ -103,17 +102,19 @@ def main():
             except Exception as exc:
                 errors.append(f'{code}: {str(exc)[:100]}')
             time.sleep(float(os.getenv('FETCH_DELAY','0.35')))
+    if spot is not None and scanned == 0:
+        fatal=True; errors.append('历史K线读取数量为0')
     qualified.sort(key=lambda x:x['score'],reverse=True)
     # Technical candidates are NOT verified trade entries; sector/news and intraday confirmation pending.
-    report={'generated_at':NOW.isoformat(),'status':'partial' if errors else 'ok',
-        'universe_count':0 if spot is None else len(spot),
+    report={'generated_at':NOW.isoformat(),'status':'DATA_FAILED' if fatal else ('partial' if errors else 'ok'),
+        'universe_count':0 if spot is None else len(spot),'snapshot_source':source,
         'historical_symbols_checked':scanned,'historical_limit':int(os.getenv('MAX_HISTORY_SYMBOLS','80')),
         'coverage':'全市场快照 + 成交额前N只历史K线技术复核；不是全市场逐股K线覆盖',
         'data_warning':'免费行情可能延迟/限流；K线末根可能是当日未收盘数据，盘中不得视为已确认日K',
         'candidates':qualified[:6],'errors':errors[:30],
         'decision':'观察名单，不构成买入指令；需核验板块、催化、分钟量价、止损和实时盘口'}
     (OUT/'latest.json').write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf-8')
-    lines=['# 小明选股 V3.0｜技术预筛报告',f'生成时间：{report["generated_at"]}',
+    lines=['# 小明选股 V3.1｜技术预筛报告',f'生成时间：{report["generated_at"]}',
         f'状态：{report["status"]}；快照范围：{report["universe_count"]}；K线检查：{scanned}',
         '',f'**覆盖说明：** {report["coverage"]}',f'**风险提示：** {report["data_warning"]}',
         '','## 技术候选（不是买入信号）']
@@ -123,5 +124,8 @@ def main():
     lines+=['','## 运行问题']+[f'- {e}' for e in errors[:15]] if errors else ['','运行错误：无（不代表行情无延迟）。']
     (OUT/'latest.md').write_text('\n'.join(lines)+'\n',encoding='utf-8')
     print('\n'.join(lines))
+    if fatal:
+        print('DATA_FAILED: market data unavailable',file=sys.stderr)
+        sys.exit(2)
 
 if __name__=='__main__': main()
