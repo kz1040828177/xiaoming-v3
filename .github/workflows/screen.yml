@@ -1,0 +1,38 @@
+
+name: 小明选股V3
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '35 7 * * 1-5'
+
+permissions:
+  contents: read
+
+jobs:
+  screen:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: 获取程序
+        uses: actions/checkout@v4
+
+      - name: 安装Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 安装依赖
+        run: pip install -r "要求.txt"
+
+      - name: 执行选股
+        run: python "筛选器.py"
+
+      - name: 保存选股报告
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xiaoming-latest
+          path: output/
+          if-no-files-found: warn
