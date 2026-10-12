@@ -1,5 +1,5 @@
 """Xiaoming V3: free A-share screening; research signals, not orders."""
-import json, os, time, sys, sys
+import json, os, time, sys, signal
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from pathlib import Path
@@ -21,15 +21,51 @@ def fetch(fn, attempts=3):
             if i == attempts-1: raise
             time.sleep(2*(i+1))
 
+class RequestTimeout(Exception):
+    pass
+
+def bounded(fn, seconds=9):
+    def alarm_handler(signum, frame):
+        raise RequestTimeout('request exceeded '+str(seconds)+'s')
+    previous=signal.signal(signal.SIGALRM,alarm_handler)
+    signal.setitimer(signal.ITIMER_REAL,seconds)
+    try:
+        return fn()
+    finally:
+        signal.setitimer(signal.ITIMER_REAL,0)
+        signal.signal(signal.SIGALRM,previous)
+
 def daily(code):
-    df = fetch(lambda: ak.stock_zh_a_hist(symbol=code, period='daily',
-        start_date=(NOW-pd.Timedelta(days=110)).strftime('%Y%m%d'),
-        end_date=NOW.strftime('%Y%m%d'), adjust='qfq'))
-    df = df.rename(columns={'日期':'date','开盘':'open','收盘':'close','最高':'high',
-        '最低':'low','成交量':'volume','成交额':'turnover'})
-    for col in ['open','close','high','low','volume','turnover']:
-        df[col] = pd.to_numeric(df[col], errors='coerce')
-    return df.dropna(subset=['close','high','low','volume']).sort_values('date')
+    start=(NOW-pd.Timedelta(days=110)).strftime('%Y%m%d')
+    end=NOW.strftime('%Y%m%d')
+    symbol=('sh' if code.startswith('6') else 'sz')+code
+    providers=[
+        ('sina',lambda:ak.stock_zh_a_daily(symbol=symbol,start_date=start,end_date=end,adjust='')),
+        ('eastmoney',lambda:ak.stock_zh_a_hist(symbol=code,period='daily',start_date=start,end_date=end,adjust='')),
+    ]
+    failures=[]
+    for name,fn in providers:
+        try:
+            df=bounded(fn,seconds=9)
+            if df is None or len(df)<35:
+                raise ValueError('insufficient bars')
+            df=df.rename(columns={'日期':'date','开盘':'open','收盘':'close','最高':'high','最低':'low',
+                                  '成交量':'volume','成交额':'turnover'})
+            if 'date' not in df.columns and df.index.name in ('date','日期'):
+                df=df.reset_index()
+            required={'date','open','close','high','low','volume'}
+            if not required.issubset(df.columns):
+                raise ValueError('missing K-line columns '+str(required-set(df.columns)))
+            for col in ['open','close','high','low','volume']:
+                df[col]=pd.to_numeric(df[col],errors='coerce')
+            df=df.dropna(subset=['close','high','low','volume']).sort_values('date')
+            df=df[pd.to_datetime(df['date']).dt.date < NOW.date()]
+            if len(df)<35:
+                raise ValueError('fewer than 35 completed daily bars')
+            return df,name
+        except Exception as exc:
+            failures.append(name+': '+str(exc)[:90])
+    raise RuntimeError(' | '.join(failures))
 
 def assess(df):
     # Strictly use completed daily bars. Never interpret live snapshot as a closed bar.
@@ -78,7 +114,7 @@ def snapshot():
     raise RuntimeError('All snapshot feeds failed: '+' | '.join(issues))
 
 def main():
-    errors=[]; scanned=0; qualified=[]
+    errors=[]; scanned=0; qualified=[]; provider_counts={}
     spot=None; source=None; fatal=False
     try:
         spot,source,warnings=snapshot()
@@ -91,31 +127,35 @@ def main():
         # Full-market snapshot covers all eligible main-board symbols.
         # Historical fetches are capped for public endpoint rate limits;
         # do NOT claim full-market technical coverage.
-        limit=int(os.getenv('MAX_HISTORY_SYMBOLS','80'))
+        limit=min(80,max(1,int(os.getenv('MAX_HISTORY_SYMBOLS','30'))))
         spot=spot.sort_values('成交额',ascending=False, key=lambda x:pd.to_numeric(x,errors='coerce').fillna(0))
         for _,r in spot.head(limit).iterrows():
             code=str(r['代码'])
             try:
-                result=assess(daily(code)); scanned+=1
+                bars,provider=daily(code)
+                result=assess(bars); scanned+=1
+                provider_counts[provider]=provider_counts.get(provider,0)+1
                 if result and result['passed']:
                     qualified.append({'code':code,'name':str(r['名称']),**result})
             except Exception as exc:
                 errors.append(f'{code}: {str(exc)[:100]}')
             time.sleep(float(os.getenv('FETCH_DELAY','0.35')))
-    if spot is not None and scanned == 0:
-        fatal=True; errors.append('历史K线读取数量为0')
+    target=0 if spot is None else min(limit,len(spot))
+    minimum=max(5,int(target*0.8)) if target else 0
+    if spot is not None and scanned<minimum:
+        fatal=True; errors.append(f'历史K线覆盖率不足：{scanned}/{target}，最低要求{minimum}')
     qualified.sort(key=lambda x:x['score'],reverse=True)
     # Technical candidates are NOT verified trade entries; sector/news and intraday confirmation pending.
     report={'generated_at':NOW.isoformat(),'status':'DATA_FAILED' if fatal else ('partial' if errors else 'ok'),
         'universe_count':0 if spot is None else len(spot),'snapshot_source':source,
-        'historical_symbols_checked':scanned,'historical_limit':int(os.getenv('MAX_HISTORY_SYMBOLS','80')),
+        'historical_symbols_checked':scanned,'historical_target':target,'historical_minimum':minimum,'historical_sources':provider_counts,'historical_limit':limit,
         'coverage':'全市场快照 + 成交额前N只历史K线技术复核；不是全市场逐股K线覆盖',
         'data_warning':'免费行情可能延迟/限流；K线末根可能是当日未收盘数据，盘中不得视为已确认日K',
         'candidates':qualified[:6],'errors':errors[:30],
         'decision':'观察名单，不构成买入指令；需核验板块、催化、分钟量价、止损和实时盘口'}
     (OUT/'latest.json').write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf-8')
-    lines=['# 小明选股 V3.1｜技术预筛报告',f'生成时间：{report["generated_at"]}',
-        f'状态：{report["status"]}；快照范围：{report["universe_count"]}；K线检查：{scanned}',
+    lines=['# 小明选股 V3.2｜技术预筛报告',f'生成时间：{report["generated_at"]}',
+        f'状态：{report["status"]}；快照范围：{report["universe_count"]}；K线检查：{scanned}/{target}；K线来源：{provider_counts}',
         '',f'**覆盖说明：** {report["coverage"]}',f'**风险提示：** {report["data_warning"]}',
         '','## 技术候选（不是买入信号）']
     if not qualified: lines.append('0只：未发现通过条件的候选，或数据不完整。')
