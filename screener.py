@@ -116,7 +116,7 @@ def snapshot():
 def main():
     errors=[]; scanned=0; qualified=[]; provider_counts={}
     spot=None; source=None; fatal=False
-    limit=min(80,max(1,int(os.getenv('MAX_HISTORY_SYMBOLS','30'))))
+    limit=min(150,max(1,int(os.getenv('MAX_HISTORY_SYMBOLS','100'))))
     try:
         spot,source,warnings=snapshot()
         errors.extend(warnings)
@@ -145,17 +145,18 @@ def main():
     if spot is not None and scanned<minimum:
         fatal=True; errors.append(f'历史K线覆盖率不足：{scanned}/{target}，最低要求{minimum}')
     qualified.sort(key=lambda x:x['score'],reverse=True)
+    market_stats={} if spot is None else {'eligible_count':len(spot),'median_price':round(float(spot['最新价'].median()),2)}
     # Technical candidates are NOT verified trade entries; sector/news and intraday confirmation pending.
     report={'generated_at':NOW.isoformat(),'status':'DATA_FAILED' if fatal else ('partial' if errors else 'ok'),
         'universe_count':0 if spot is None else len(spot),'snapshot_source':source,
-        'historical_symbols_checked':scanned,'historical_target':target,'historical_minimum':minimum,'historical_sources':provider_counts,'historical_limit':limit,
+        'historical_symbols_checked':scanned,'market_stats':market_stats,'sector_verified':False,'capital_flow_verified':False,'historical_target':target,'historical_minimum':minimum,'historical_sources':provider_counts,'historical_limit':limit,
         'coverage':'全市场快照 + 成交额前N只历史K线技术复核；不是全市场逐股K线覆盖',
         'data_warning':'免费行情可能延迟/限流；K线末根可能是当日未收盘数据，盘中不得视为已确认日K',
         'candidates':qualified[:6],'errors':errors[:30],
         'decision':'观察名单，不构成买入指令；需核验板块、催化、分钟量价、止损和实时盘口'}
     (OUT/'latest.json').write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf-8')
-    lines=['# 小明选股 V3.2｜技术预筛报告',f'生成时间：{report["generated_at"]}',
-        f'状态：{report["status"]}；快照范围：{report["universe_count"]}；K线检查：{scanned}/{target}；K线来源：{provider_counts}',
+    lines=['# 小明选股 V3.3｜扩大样本技术预筛报告',f'生成时间：{report["generated_at"]}',
+        f'状态：{report["status"]}；快照范围：{report["universe_count"]}；K线检查：{scanned}/{target}；K线来源：{provider_counts}；板块和资金尚未验证',
         '',f'**覆盖说明：** {report["coverage"]}',f'**风险提示：** {report["data_warning"]}',
         '','## 技术候选（不是买入信号）']
     if not qualified: lines.append('0只：未发现通过条件的候选，或数据不完整。')
